@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import threading
 import traceback
+from collections import deque
 from datetime import datetime
 from queue import Queue
 from typing import Any, TypedDict
@@ -51,6 +52,7 @@ class Process:
         self._console_log: Queue[str] | None = None
         self._console_relay: Queue[str] | None = None
         self._max_logs_in_queue = 1000
+        self._last_logs: deque[str] = deque(maxlen=200)
 
         dirs = [self.path_files, self.path_bkps, self.path_plugins, self.path_commands]
         for dir in dirs:
@@ -321,6 +323,9 @@ class Process:
         elif message.content.lower() == 'mdreload':
             self.load_plugins(reload=True)
 
+        elif message.content.lower() in ['last_log', 'last_logs']:
+            await self.send_last_logs()
+
         else:
             self.execute(message.content)
 
@@ -411,6 +416,7 @@ class Process:
                         if log.replace('\n', '').strip() == '':
                             continue
                         if not any(x in log for x in self.blacklist if x):
+                            self._last_logs.append(log)
                             self._console_relay.put(log)
 
                         asyncio.create_task(self._listener_events(log))
@@ -439,6 +445,17 @@ class Process:
     def add_log(self, log: str) -> None:
         if self._console_relay:
             self._console_relay.put(self.log_format(log))
+
+    def last_logs(self, *, limit: int = 40) -> list[str]:
+        return list(self._last_logs)[-limit:]
+
+    async def send_last_logs(self, *, limit: int = 40) -> discord.Message:
+        logs = self.last_logs(limit=limit)
+        if not logs:
+            return await self.send_to_console('[No logs saved yet]')
+
+        content = '\n'.join(logs)
+        return await self.send_to_console(content)
 
     async def call_plugins(self, function: str, args: tuple[Any, ...] = ()) -> None:
         for plugin in self.plugins:
