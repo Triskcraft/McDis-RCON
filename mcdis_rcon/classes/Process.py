@@ -9,6 +9,7 @@ import subprocess
 import threading
 import traceback
 from collections import deque
+from collections.abc import Iterable
 from datetime import datetime
 from queue import Queue
 from typing import Any, TypedDict
@@ -177,9 +178,7 @@ class Process:
                 try:
                     if plugin.endswith('.py'):
                         module_path = os.path.join(self.path_plugins, plugin)
-                        spec = importlib.util.spec_from_file_location(
-                            plugin.removesuffix('.py'), module_path
-                        )
+                        spec = importlib.util.spec_from_file_location(plugin.removesuffix('.py'), module_path)
                         if not spec or not spec.loader:
                             continue
                         mod = importlib.util.module_from_spec(spec)
@@ -191,9 +190,7 @@ class Process:
 
                 except Exception:
                     asyncio.create_task(
-                        self.error_report(
-                            title=f'Unable to import plugin {plugin}', error=traceback.format_exc()
-                        )
+                        self.error_report(title=f'Unable to import plugin {plugin}', error=traceback.format_exc())
                     )
 
         if not reload:
@@ -201,9 +198,17 @@ class Process:
 
         for log in logs:
             self.add_log(log)
+        asyncio.create_task(self.client.call_addons('on_plugins_load', (self,)))
+        asyncio.create_task(self.call_plugins('on_plugins_load', (self,)))
 
     def unload_plugins(self) -> None:
-        for plugin in self.plugins:
+        plugins = list(self.plugins)
+        asyncio.run_coroutine_threadsafe(self.client.call_addons('on_plugins_unload', (self,)), self.client.loop)
+        asyncio.run_coroutine_threadsafe(
+            self.call_plugins('on_plugins_unload', (self,), plugins=plugins), self.client.loop
+        )
+
+        for plugin in plugins:
             unload = getattr(plugin, 'unload', None)
             if callable(unload):
                 unload()
@@ -244,9 +249,7 @@ class Process:
     def ram_usage(self) -> str:
         if not self.is_running():
             pass
-        elif (
-            not isinstance(self.real_process, psutil.Process) or not self.real_process.is_running()
-        ):
+        elif not isinstance(self.real_process, psutil.Process) or not self.real_process.is_running():
             self._find_real_process()
 
         if not self.real_process:
@@ -283,9 +286,7 @@ class Process:
             try:
                 os.rename(bkp, new_name)
             except Exception:
-                asyncio.create_task(
-                    self.error_report(title='Renaming in make_bkp()', error=traceback.format_exc())
-                )
+                asyncio.create_task(self.error_report(title='Renaming in make_bkp()', error=traceback.format_exc()))
                 return
 
         bkp_path = os.path.join(self.path_bkps, f'{self.name} 1')
@@ -365,17 +366,9 @@ class Process:
         await remote_console.send('```\n[Initializing Process...]\n```')
 
         if self.process and self._console_relay:
-            while (
-                self.process.poll() is None or not self._console_relay.empty()
-            ) and not self._stop_relay:
+            while (self.process.poll() is None or not self._console_relay.empty()) and not self._stop_relay:
                 try:
-                    logs = '\n'.join(
-                        [
-                            self._console_relay.get()
-                            for _ in range(10)
-                            if not self._console_relay.empty()
-                        ]
-                    )
+                    logs = '\n'.join([self._console_relay.get() for _ in range(10) if not self._console_relay.empty()])
 
                     if logs.replace('\n', '').strip() != '':
                         logs = logs.replace('_', '⎽').replace('*', ' ').replace('`', '’').strip()
@@ -474,16 +467,17 @@ class Process:
         content = '\n'.join(logs)
         return await self.send_to_console(content)
 
-    async def call_plugins(self, function: str, args: tuple[Any, ...] = ()) -> None:
-        for plugin in self.plugins:
+    async def call_plugins(
+        self, function: str, args: tuple[Any, ...] = (), plugins: Iterable[object] | None = None
+    ) -> None:
+        target_plugins = self.plugins if plugins is None else plugins
+        for plugin in target_plugins:
             try:
                 func = getattr(plugin, function, None)
                 if func:
                     await func(*args)
             except Exception:
-                await self.error_report(
-                    title=f'{function}() of {plugin}', error=traceback.format_exc()
-                )
+                await self.error_report(title=f'{function}() of {plugin}', error=traceback.format_exc())
 
     async def error_report(self, *, title: str, error: str) -> None:
         formatted_title = f'{self.name}: {title}'

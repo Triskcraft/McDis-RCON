@@ -7,7 +7,7 @@ import sys
 import threading
 import time
 import traceback
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any, NotRequired, TypedDict, cast
 
@@ -83,9 +83,7 @@ class McDisClient(commands.Bot):
         self.is_running = False
         self.display_panel = False
         self.discord_listeners = [
-            x[:-3]
-            for x in os.listdir(os.path.join(package_path, 'behaviours'))
-            if x.endswith('.py')
+            x[:-3] for x in os.listdir(os.path.join(package_path, 'behaviours')) if x.endswith('.py')
         ]
 
         os.makedirs(self.path_backups, exist_ok=True)
@@ -120,10 +118,7 @@ class McDisClient(commands.Bot):
                 os._exit(0)
 
             elif self.config['Language'] not in allowed_languages:
-                print(
-                    "The 'Language' variable must be one of the following: "
-                    f'{", ".join(allowed_languages)}.'
-                )
+                print(f"The 'Language' variable must be one of the following: {', '.join(allowed_languages)}.")
                 os._exit(0)
 
             elif not isinstance(self.config['Backups'], int):  # pyright: ignore[reportUnnecessaryIsInstance]
@@ -131,9 +126,7 @@ class McDisClient(commands.Bot):
                 os._exit(0)
 
             elif self.config['Backups'] not in list(range(1, 6)):
-                print(
-                    f"The 'Backups' variable must be between 1 and 5, not {self.config['Backups']}."
-                )
+                print(f"The 'Backups' variable must be between 1 and 5, not {self.config['Backups']}.")
                 os._exit(0)
 
             elif not isinstance(self.config['Flask']['Allow'], bool):  # pyright: ignore[reportUnnecessaryIsInstance]
@@ -214,9 +207,7 @@ class McDisClient(commands.Bot):
 
         lang: gettext.NullTranslations
         if self.config['Language'] != 'en':
-            lang = gettext.translation(
-                'app', localedir=locales_dir, languages=[self.config['Language']]
-            )
+            lang = gettext.translation('app', localedir=locales_dir, languages=[self.config['Language']])
         else:
             lang = gettext.NullTranslations()
 
@@ -292,9 +283,7 @@ class McDisClient(commands.Bot):
                     addon_name = addon.removesuffix('.py')
 
                     module_path = os.path.join(self.path_addons, addon)
-                    spec = importlib.util.spec_from_file_location(
-                        addon.removesuffix('.py'), module_path
-                    )
+                    spec = importlib.util.spec_from_file_location(addon.removesuffix('.py'), module_path)
                     if not spec or not spec.loader:
                         continue
                     mod = importlib.util.module_from_spec(spec)
@@ -329,6 +318,8 @@ class McDisClient(commands.Bot):
                     should_print=False,
                 )
 
+        await self.call_addons('on_addons_load', (self,))
+
     async def _load_behaviours(self) -> None:
         await self.load_extension('mcdis_rcon.behaviours.events')
 
@@ -344,30 +335,22 @@ class McDisClient(commands.Bot):
 
                 if not messages:
                     if file:
-                        await self.panel.send(
-                            embed=PanelEmbed(self), view=PanelView(self), file=file
-                        )
+                        await self.panel.send(embed=PanelEmbed(self), view=PanelView(self), file=file)
                     else:
                         await self.panel.send(embed=PanelEmbed(self), view=PanelView(self))
 
                 elif self.user is not None and messages[0].author.id != self.user.id:
                     while messages:
                         await self.panel.purge()
-                        messages = [
-                            msg async for msg in self.panel.history(limit=None, oldest_first=True)
-                        ]
+                        messages = [msg async for msg in self.panel.history(limit=None, oldest_first=True)]
 
                     if file:
-                        await self.panel.send(
-                            embed=PanelEmbed(self), view=PanelView(self), file=file
-                        )
+                        await self.panel.send(embed=PanelEmbed(self), view=PanelView(self), file=file)
                     else:
                         await self.panel.send(embed=PanelEmbed(self), view=PanelView(self))
 
                 elif not view:
-                    await messages[0].edit(
-                        embed=PanelEmbed(self), attachments=[file] if file else []
-                    )
+                    await messages[0].edit(embed=PanelEmbed(self), attachments=[file] if file else [])
 
                 else:
                     await messages[0].edit(
@@ -432,9 +415,7 @@ class McDisClient(commands.Bot):
         try:
             while True:
                 print(
-                    '\n'
-                    + self._('Commands')
-                    + self._(': start, stop, restart, kill, mdreload, adreload, status, exit')
+                    '\n' + self._('Commands') + self._(': start, stop, restart, kill, mdreload, adreload, status, exit')
                 )
                 command = input('>>')
                 asyncio.run_coroutine_threadsafe(self.console_interface(command), self.loop)
@@ -480,22 +461,14 @@ class McDisClient(commands.Bot):
 
             if process is None:
                 print(
-                    self._('✖ Specify the process. E.g.: `{}{} <name>` or `{}{}-all`.').format(
-                        '', 'start', '', 'start'
-                    )
+                    self._('✖ Specify the process. E.g.: `{}{} <name>` or `{}{}-all`.').format('', 'start', '', 'start')
                 )
 
             elif process.is_running():
-                print(
-                    self._('✖ `[{}]`: The process was already open.')
-                    .format(process.name)
-                    .replace('`', '')
-                )
+                print(self._('✖ `[{}]`: The process was already open.').format(process.name).replace('`', ''))
 
             else:
-                print(
-                    self._('✔ `[{}]`: Initializing process.').format(process.name).replace('`', '')
-                )
+                print(self._('✔ `[{}]`: Initializing process.').format(process.name).replace('`', ''))
                 process.start()
 
         elif self.is_command(command.lower(), 'stop', console=True):
@@ -504,17 +477,11 @@ class McDisClient(commands.Bot):
 
             if process is None:
                 print(
-                    self._('✖ Specify the process. E.g.: `{}{} <name>` or `{}{}-all`.').format(
-                        '', 'stop', '', 'stop'
-                    )
+                    self._('✖ Specify the process. E.g.: `{}{} <name>` or `{}{}-all`.').format('', 'stop', '', 'stop')
                 )
 
             elif not process.is_running():
-                print(
-                    self._('✖ `[{}]`: The process was not open.')
-                    .format(process.name)
-                    .replace('`', '')
-                )
+                print(self._('✖ `[{}]`: The process was not open.').format(process.name).replace('`', ''))
 
             else:
                 print(self._('✔ `[{}]`: Stopping process.').format(process.name).replace('`', ''))
@@ -526,24 +493,14 @@ class McDisClient(commands.Bot):
 
             if process is None:
                 print(
-                    self._('✖ Specify the process. E.g.: `{}{} <name>` or `{}{}-all`.').format(
-                        '', 'kill', '', 'kill'
-                    )
+                    self._('✖ Specify the process. E.g.: `{}{} <name>` or `{}{}-all`.').format('', 'kill', '', 'kill')
                 )
 
             elif not process.is_running():
-                print(
-                    self._('✖ `[{}]`: The process was not open.')
-                    .format(process.name)
-                    .replace('`', '')
-                )
+                print(self._('✖ `[{}]`: The process was not open.').format(process.name).replace('`', ''))
 
             else:
-                print(
-                    self._('✔ `[{}]`: Forcibly stopped process.')
-                    .format(process.name)
-                    .replace('`', '')
-                )
+                print(self._('✔ `[{}]`: Forcibly stopped process.').format(process.name).replace('`', ''))
                 process.kill()
 
         elif self.is_command(command.lower(), 'restart', console=True):
@@ -558,16 +515,10 @@ class McDisClient(commands.Bot):
                 )
 
             elif not process.is_running():
-                print(
-                    self._('✖ `[{}]`: The process was not open.')
-                    .format(process.name)
-                    .replace('`', '')
-                )
+                print(self._('✖ `[{}]`: The process was not open.').format(process.name).replace('`', ''))
 
             else:
-                print(
-                    self._('✔ `[{}]`: Restarting process...').format(process.name).replace('`', '')
-                )
+                print(self._('✔ `[{}]`: Restarting process...').format(process.name).replace('`', ''))
                 await process.restart()
 
         elif self.is_command(command.lower(), 'mdreload', console=True):
@@ -582,16 +533,10 @@ class McDisClient(commands.Bot):
                 )
 
             elif not process.is_running():
-                print(
-                    self._('✖ `[{}]`: The process was not open.')
-                    .format(process.name)
-                    .replace('`', '')
-                )
+                print(self._('✖ `[{}]`: The process was not open.').format(process.name).replace('`', ''))
 
             else:
-                print(
-                    self._('✔ `[{}]`: Reloading mdplugins...').format(process.name).replace('`', '')
-                )
+                print(self._('✔ `[{}]`: Reloading mdplugins...').format(process.name).replace('`', ''))
                 process.load_plugins(reload=True)
 
         elif self.is_command(command.lower(), 'adreload', console=True):
@@ -707,9 +652,7 @@ class McDisClient(commands.Bot):
                     await response.delete(delay=2)
 
                 else:
-                    response = await message.channel.send(
-                        self._('✔ `[{}]`: Stopping process.').format(process.name)
-                    )
+                    response = await message.channel.send(self._('✔ `[{}]`: Stopping process.').format(process.name))
                     await response.delete(delay=2)
                     process.stop()
 
@@ -768,9 +711,7 @@ class McDisClient(commands.Bot):
                     await process.restart()
 
             elif self.is_command(message.content.lower(), 'mdreload'):
-                process_name = (
-                    message.content.removeprefix(f'{self.prefix}mdreload').lower().strip()
-                )
+                process_name = message.content.removeprefix(f'{self.prefix}mdreload').lower().strip()
                 process = self._find_process(process_name)
 
                 await message.delete()
@@ -842,22 +783,17 @@ class McDisClient(commands.Bot):
                 if not os.path.exists(path_to_save):
                     await attachment.save(Path(path_to_save))
                     response = await response.edit(
-                        content=response.content
-                        + self._('\n • `{}` uploaded.').format(attachment.filename)
+                        content=response.content + self._('\n • `{}` uploaded.').format(attachment.filename)
                     )
 
                 else:
                     response = await response.edit(
                         content=response.content
-                        + self._('\n • McDis will not overwrite the file `{}`.').format(
-                            path_to_show
-                        )
+                        + self._('\n • McDis will not overwrite the file `{}`.').format(path_to_show)
                     )
                 await asyncio.sleep(2)
 
-            response = await response.edit(
-                content=response.content + self._('\n ✔ Files have been processed.')
-            )
+            response = await response.edit(content=response.content + self._('\n ✔ Files have been processed.'))
             await response.delete(delay=2)
         await message.delete()
 
@@ -907,9 +843,7 @@ class McDisClient(commands.Bot):
 
         print(self._('Restarting...'))
 
-        await interaction.followup.edit_message(
-            message_id=interaction.message.id, content=self._('Restarting...')
-        )
+        await interaction.followup.edit_message(message_id=interaction.message.id, content=self._('Restarting...'))
 
         await asyncio.sleep(3)
         await interaction.followup.delete_message(interaction.message.id)
@@ -950,11 +884,7 @@ class McDisClient(commands.Bot):
 
     def is_command(self, message: str, command: str, console: bool = False) -> bool:
         dummy = message + ' '
-        return (
-            dummy.startswith(f'{self.prefix}{command} ')
-            if not console
-            else dummy.startswith(command)
-        )
+        return dummy.startswith(f'{self.prefix}{command} ') if not console else dummy.startswith(command)
 
     def _find_process(self, process_name: str) -> Process | None:
         return next(
@@ -962,9 +892,7 @@ class McDisClient(commands.Bot):
             None,
         )
 
-    def is_valid_mcdis_path(
-        self, path: str, *, check_if_file: bool = False, check_if_dir: bool = False
-    ) -> str | bool:
+    def is_valid_mcdis_path(self, path: str, *, check_if_file: bool = False, check_if_dir: bool = False) -> str | bool:
         real_path = un_mcdis_path(path)
         new_path = os.path.join(self.cwd, real_path)
         # Absolute paths override `self.cwd`; keep the result inside the McDis cwd.
@@ -982,17 +910,18 @@ class McDisClient(commands.Bot):
 
         return True
 
-    async def call_addons(self, function: str, args: tuple[Any, ...] = ()) -> None:
-        for _name, addon in self.addons.items():
+    async def call_addons(
+        self, function: str, args: tuple[Any, ...] = (), addons: Iterable[object] | None = None
+    ) -> None:
+        target_addons = self.addons.values() if addons is None else addons
+        for addon in target_addons:
             try:
                 func = getattr(addon, function, None)
                 if func:
                     await func(*args)
 
             except Exception:
-                await self.error_report(
-                    title=f'{function}() of {addon}', error=traceback.format_exc()
-                )
+                await self.error_report(title=f'{function}() of {addon}', error=traceback.format_exc())
 
     async def call_mdextras(
         self,
@@ -1042,7 +971,10 @@ class McDisClient(commands.Bot):
         return decorator
 
     def unload_addons(self) -> None:
-        for addon in self.addons.values():
+        addons = list(self.addons.values())
+        asyncio.run_coroutine_threadsafe(self.call_addons('on_addons_unload', (self,), addons=addons), self.loop)
+
+        for addon in addons:
             unload = getattr(addon, 'unload', None)
             if callable(unload):
                 unload()
