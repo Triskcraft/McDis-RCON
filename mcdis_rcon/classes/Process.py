@@ -185,7 +185,7 @@ class Process:
                         spec.loader.exec_module(mod)
 
                         plugin_instance = mod.mdplugin(self)
-                        self.plugins.append(plugin_instance)
+                        self.register_plugin(plugin_instance)
                         logs.append(f'Plugin imported:: {plugin}')
 
                 except Exception:
@@ -214,6 +214,10 @@ class Process:
                 unload()
 
         self.plugins = []
+
+    def register_plugin(self, plugin: object) -> object:
+        self.plugins.append(plugin)
+        return plugin
 
     async def restart(self) -> None:
         if not self.is_running():
