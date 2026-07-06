@@ -47,6 +47,7 @@ class Process:
         self.process: subprocess.Popen[bytes] | None = None
         self.real_process: PsutilProcess | None = None
         self._relaying = False
+        self._stop_requested = False
         self._stop_relay = False
         self._stop_relay_reason: None | str = None
         self._console_log: Queue[str] | None = None
@@ -87,6 +88,8 @@ class Process:
             )
             self.load_plugins()
             asyncio.create_task(self._listener_console())
+            asyncio.create_task(self.client.call_addons('on_process_start', (self,)))
+            asyncio.create_task(self.call_plugins('on_process_start', (self,)))
         except Exception:
             asyncio.create_task(self.error_report(title='start()', error=traceback.format_exc()))
             self.stop()
@@ -95,6 +98,9 @@ class Process:
         if not self.is_running():
             return
 
+        self._stop_requested = True
+        asyncio.create_task(self.client.call_addons('on_process_stop', (self,)))
+        asyncio.create_task(self.call_plugins('on_process_stop', (self,)))
         self.execute(self.stop_cmd)
 
         if not omit_task:
@@ -114,6 +120,7 @@ class Process:
     def finalize(self) -> None:
         self.process = None
         self.real_process = None
+        self._stop_requested = False
         self._stop_relay = False
         self._stop_relay_reason = None
         self._console_log = None
@@ -121,6 +128,12 @@ class Process:
         self.unload_plugins()
 
     def kill(self, *, omit_task: bool = False) -> None:
+        should_emit_stop = not self._stop_requested and self.is_running()
+        self._stop_requested = True
+        if should_emit_stop:
+            asyncio.create_task(self.client.call_addons('on_process_stop', (self,)))
+            asyncio.create_task(self.call_plugins('on_process_stop', (self,)))
+
         if isinstance(self.process, subprocess.Popen):
             with contextlib.suppress(BaseException):
                 self.process.kill()
@@ -426,6 +439,10 @@ class Process:
         except Exception:
             await self.error_report(title='listener_console()', error=traceback.format_exc())
             return
+
+        if not self._stop_requested:
+            await self.client.call_addons('on_process_crash', (self,))
+            await self.call_plugins('on_process_crash', (self,))
 
         self.stop()
 
