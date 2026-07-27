@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import contextlib
 import glob
@@ -8,9 +10,11 @@ import shutil
 import subprocess
 import threading
 import traceback
+from collections import deque
+from collections.abc import Iterable
 from datetime import datetime
 from queue import Queue
-from typing import Any, TypedDict
+from typing import TYPE_CHECKING, Any, TypedDict
 
 import aiohttp
 import discord
@@ -21,7 +25,9 @@ from ..utils.discord_utils import thread
 from ..utils.files import copy_dir, get_path_size
 from ..utils.hardware import ram_usage
 from ..utils.mrkd import truncate
-from .McDisClient import McDisClient
+
+if TYPE_CHECKING:
+    from .McDisClient import McDisClient
 
 
 class ProcessConfig(TypedDict):
@@ -46,11 +52,15 @@ class Process:
         self.process: subprocess.Popen[bytes] | None = None
         self.real_process: PsutilProcess | None = None
         self._relaying = False
+        self._stop_requested = False
         self._stop_relay = False
         self._stop_relay_reason: None | str = None
         self._console_log: Queue[str] | None = None
         self._console_relay: Queue[str] | None = None
         self._max_logs_in_queue = 1000
+        self._relay_message_limit = 1990
+        self._omitted_relay_logs = 0
+        self._last_logs: deque[str] = deque(maxlen=200)
 
         dirs = [self.path_files, self.path_bkps, self.path_plugins, self.path_commands]
         for dir in dirs:
@@ -73,7 +83,8 @@ class Process:
                 os.makedirs(dir, exist_ok=True)
 
             self._console_log = queue.Queue()
-            self._console_relay = queue.Queue()
+            self._console_relay = queue.Queue(maxsize=self._max_logs_in_queue)
+            self._omitted_relay_logs = 0
 
             self.process = subprocess.Popen(
                 self.start_cmd.split(' '),
@@ -85,6 +96,8 @@ class Process:
             )
             self.load_plugins()
             asyncio.create_task(self._listener_console())
+            asyncio.create_task(self.client.call_addons('on_process_start', (self,)))
+            asyncio.create_task(self.call_plugins('on_process_start', (self,)))
         except Exception:
             asyncio.create_task(self.error_report(title='start()', error=traceback.format_exc()))
             self.stop()
@@ -93,6 +106,9 @@ class Process:
         if not self.is_running():
             return
 
+        self._stop_requested = True
+        asyncio.create_task(self.client.call_addons('on_process_stop', (self,)))
+        asyncio.create_task(self.call_plugins('on_process_stop', (self,)))
         self.execute(self.stop_cmd)
 
         if not omit_task:
@@ -112,6 +128,7 @@ class Process:
     def finalize(self) -> None:
         self.process = None
         self.real_process = None
+        self._stop_requested = False
         self._stop_relay = False
         self._stop_relay_reason = None
         self._console_log = None
@@ -119,6 +136,12 @@ class Process:
         self.unload_plugins()
 
     def kill(self, *, omit_task: bool = False) -> None:
+        should_emit_stop = not self._stop_requested and self.is_running()
+        self._stop_requested = True
+        if should_emit_stop:
+            asyncio.create_task(self.client.call_addons('on_process_stop', (self,)))
+            asyncio.create_task(self.call_plugins('on_process_stop', (self,)))
+
         if isinstance(self.process, subprocess.Popen):
             with contextlib.suppress(BaseException):
                 self.process.kill()
@@ -162,23 +185,19 @@ class Process:
                 try:
                     if plugin.endswith('.py'):
                         module_path = os.path.join(self.path_plugins, plugin)
-                        spec = importlib.util.spec_from_file_location(
-                            plugin.removesuffix('.py'), module_path
-                        )
+                        spec = importlib.util.spec_from_file_location(plugin.removesuffix('.py'), module_path)
                         if not spec or not spec.loader:
                             continue
                         mod = importlib.util.module_from_spec(spec)
                         spec.loader.exec_module(mod)
 
                         plugin_instance = mod.mdplugin(self)
-                        self.plugins.append(plugin_instance)
+                        self.register_plugin(plugin_instance)
                         logs.append(f'Plugin imported:: {plugin}')
 
                 except Exception:
                     asyncio.create_task(
-                        self.error_report(
-                            title=f'Unable to import plugin {plugin}', error=traceback.format_exc()
-                        )
+                        self.error_report(title=f'Unable to import plugin {plugin}', error=traceback.format_exc())
                     )
 
         if not reload:
@@ -186,14 +205,26 @@ class Process:
 
         for log in logs:
             self.add_log(log)
+        asyncio.create_task(self.client.call_addons('on_plugins_load', (self,)))
+        asyncio.create_task(self.call_plugins('on_plugins_load', (self,)))
 
     def unload_plugins(self) -> None:
-        for plugin in self.plugins:
+        plugins = list(self.plugins)
+        asyncio.run_coroutine_threadsafe(self.client.call_addons('on_plugins_unload', (self,)), self.client.loop)
+        asyncio.run_coroutine_threadsafe(
+            self.call_plugins('on_plugins_unload', (self,), plugins=plugins), self.client.loop
+        )
+
+        for plugin in plugins:
             unload = getattr(plugin, 'unload', None)
             if callable(unload):
                 unload()
 
         self.plugins = []
+
+    def register_plugin(self, plugin: object) -> object:
+        self.plugins.append(plugin)
+        return plugin
 
     async def restart(self) -> None:
         if not self.is_running():
@@ -229,9 +260,7 @@ class Process:
     def ram_usage(self) -> str:
         if not self.is_running():
             pass
-        elif (
-            not isinstance(self.real_process, psutil.Process) or not self.real_process.is_running()
-        ):
+        elif not isinstance(self.real_process, psutil.Process) or not self.real_process.is_running():
             self._find_real_process()
 
         if not self.real_process:
@@ -268,9 +297,7 @@ class Process:
             try:
                 os.rename(bkp, new_name)
             except Exception:
-                asyncio.create_task(
-                    self.error_report(title='Renaming in make_bkp()', error=traceback.format_exc())
-                )
+                asyncio.create_task(self.error_report(title='Renaming in make_bkp()', error=traceback.format_exc()))
                 return
 
         bkp_path = os.path.join(self.path_bkps, f'{self.name} 1')
@@ -321,6 +348,9 @@ class Process:
         elif message.content.lower() == 'mdreload':
             self.load_plugins(reload=True)
 
+        elif message.content.lower() in ['last_log', 'last_logs']:
+            await self.send_last_logs()
+
         else:
             self.execute(message.content)
 
@@ -341,41 +371,103 @@ class Process:
             except Exception:
                 pass
 
+    @staticmethod
+    def _sanitize_relay_log(log: str) -> str:
+        return log.replace('_', '⎽').replace('*', ' ').replace('`', '’').strip()
+
+    def _enqueue_relay_log(self, log: str) -> None:
+        if not self._console_relay:
+            return
+
+        try:
+            self._console_relay.put_nowait(log)
+        except queue.Full:
+            # Keep the newest console output. The complete process output still
+            # belongs to the process itself; Discord is only a live relay.
+            with contextlib.suppress(queue.Empty):
+                self._console_relay.get_nowait()
+                self._omitted_relay_logs += 1
+            self._console_relay.put_nowait(log)
+
+    def _take_relay_batch(self, pending_chunks: deque[str]) -> str:
+        if not self._console_relay:
+            return ''
+
+        batch: list[str] = []
+        batch_size = 0
+
+        while batch_size < self._relay_message_limit:
+            if pending_chunks:
+                log = pending_chunks.popleft()
+            else:
+                try:
+                    log = self._console_relay.get_nowait()
+                except queue.Empty:
+                    break
+                log = self._sanitize_relay_log(log)
+
+            if not log:
+                continue
+
+            separator_size = 1 if batch else 0
+            available = self._relay_message_limit - batch_size - separator_size
+            if available <= 0:
+                pending_chunks.appendleft(log)
+                break
+
+            batch.append(log[:available])
+            batch_size += separator_size + min(len(log), available)
+
+            if len(log) > available:
+                pending_chunks.appendleft(log[available:])
+                break
+
+        return '\n'.join(batch)
+
+    def _queue_omission_notice(self, pending_chunks: deque[str], *, process_finished: bool) -> None:
+        if not self._console_relay or self._omitted_relay_logs == 0:
+            return
+
+        recovered = self._console_relay.qsize() <= self._max_logs_in_queue // 2
+        if not recovered and not process_finished:
+            return
+
+        omitted = self._omitted_relay_logs
+        self._omitted_relay_logs = 0
+        pending_chunks.append(
+            self.log_format(
+                f'Discord relay skipped {omitted} logs because the console was producing output '
+                'faster than Discord could receive it. Use last_logs for recent output.'
+            )
+        )
+
     async def _relay_console(self) -> None:
         self._relaying = True
         remote_console = await thread(f'Console {self.name}', self.client.panel)
         await remote_console.send('```\n[Initializing Process...]\n```')
 
         if self.process and self._console_relay:
+            pending_chunks: deque[str] = deque()
             while (
-                self.process.poll() is None or not self._console_relay.empty()
+                self.process.poll() is None
+                or not self._console_relay.empty()
+                or pending_chunks
+                or self._omitted_relay_logs
             ) and not self._stop_relay:
                 try:
-                    logs = '\n'.join(
-                        [
-                            self._console_relay.get()
-                            for _ in range(10)
-                            if not self._console_relay.empty()
-                        ]
-                    )
+                    process_finished = self.process.poll() is not None
+                    self._queue_omission_notice(pending_chunks, process_finished=process_finished)
 
-                    if logs.replace('\n', '').strip() != '':
-                        logs = logs.replace('_', '⎽').replace('*', ' ').replace('`', '’').strip()
-                        await remote_console.send(f'```md\n{truncate(logs, 1990)}```')
+                    if not pending_chunks and self._console_relay.empty():
+                        await asyncio.sleep(0.25)
+                        continue
 
-                    if self._console_relay.qsize() < 10:
-                        await asyncio.sleep(0.5)
+                    logs = self._take_relay_batch(pending_chunks)
+                    if logs:
+                        await remote_console.send(f'```md\n{logs}```')
 
-                    elif self._max_logs_in_queue < self._console_relay.qsize():
-                        self._console_relay = queue.Queue()
-                        log = self.log_format(
-                            f'McDis was {self._max_logs_in_queue} logs behind; omitting relaying these logs...'
-                        )
-
-                        await remote_console.send(f'```md\n{log}\n```')
-
-                    else:
-                        await asyncio.sleep(0.1)
+                    if not pending_chunks and self._console_relay.empty() and not process_finished:
+                        await asyncio.sleep(0.25)
 
                 except (aiohttp.ClientError, discord.HTTPException):
                     try:
@@ -411,7 +503,8 @@ class Process:
                         if log.replace('\n', '').strip() == '':
                             continue
                         if not any(x in log for x in self.blacklist if x):
-                            self._console_relay.put(log)
+                            self._last_logs.append(log)
+                            self._enqueue_relay_log(log)
 
                         asyncio.create_task(self._listener_events(log))
 
@@ -420,6 +513,10 @@ class Process:
         except Exception:
             await self.error_report(title='listener_console()', error=traceback.format_exc())
             return
+
+        if not self._stop_requested:
+            await self.client.call_addons('on_process_crash', (self,))
+            await self.call_plugins('on_process_crash', (self,))
 
         self.stop()
 
@@ -437,19 +534,30 @@ class Process:
         return f'[McDis] [{datetime.now().strftime("%H:%M:%S")}] [MainThread/{type}]: {log}'
 
     def add_log(self, log: str) -> None:
-        if self._console_relay:
-            self._console_relay.put(self.log_format(log))
+        self._enqueue_relay_log(self.log_format(log))
 
-    async def call_plugins(self, function: str, args: tuple[Any, ...] = ()) -> None:
-        for plugin in self.plugins:
+    def last_logs(self, *, limit: int = 40) -> list[str]:
+        return list(self._last_logs)[-limit:]
+
+    async def send_last_logs(self, *, limit: int = 40) -> discord.Message:
+        logs = self.last_logs(limit=limit)
+        if not logs:
+            return await self.send_to_console('[No logs saved yet]')
+
+        content = '\n'.join(logs)
+        return await self.send_to_console(content)
+
+    async def call_plugins(
+        self, function: str, args: tuple[Any, ...] = (), plugins: Iterable[object] | None = None
+    ) -> None:
+        target_plugins = self.plugins if plugins is None else plugins
+        for plugin in target_plugins:
             try:
                 func = getattr(plugin, function, None)
                 if func:
                     await func(*args)
             except Exception:
-                await self.error_report(
-                    title=f'{function}() of {plugin}', error=traceback.format_exc()
-                )
+                await self.error_report(title=f'{function}() of {plugin}', error=traceback.format_exc())
 
     async def error_report(self, *, title: str, error: str) -> None:
         formatted_title = f'{self.name}: {title}'

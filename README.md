@@ -14,6 +14,7 @@ McDis-RCON is a Python application that allows you to relay the console of a Min
 - **Support for English and Spanish**
 - **Process Control**: Easily start, stop, restart, and terminate servers.
 - **Console Relay**: View and interact with the server console directly from Discord.
+- **Recent Console History**: Retrieve the latest logs from Discord or from each process API.
 - **Backup system**: Allows you to create backups of the process files.
 - **File Explorer**: Manage server files with basic integrated operations.
 - **Process Manager**: Monitor and manage processes within McDis's execution folder.
@@ -23,7 +24,7 @@ McDis-RCON is a Python application that allows you to relay the console of a Min
 - **Advanced Error Reporting**: Program errors are automatically detected and notified on Discord, simplifying monitoring and resolution.
 - **Multiple Launcher Compatibility**: Works with Fabric, Paper, Vanilla, and more (any Java process).
 - **Does not modify the Minecraft server**: McDis-RCON runs processes with `Popen`, similar to **MCDReforged**.
-- **Event System**: Unlike **MCDReforged**, McDis-RCON does not have an event system by default. However, this can be added via a plugin.
+- **Lifecycle Hooks**: Addons and plugins can react to process start, stop, or crash events and extension loading or unloading.
 - **Compatible with MCDReforged**.
 
 ### 📌 Configuration Example

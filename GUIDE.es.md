@@ -89,6 +89,11 @@ En los hilos que actúan como consola de los procesos, se pueden usar los siguie
 - `kill` → Cierra forzosamente el proceso.
 - `restart` → Ejecuta `stop_cmd` y, una vez cerrado el proceso, ejecuta `start_cmd`.
 - `mdreload` → Recarga los mdplugins dentro de `.mdplugins` del proceso correspondiente.
+- `last_log` o `last_logs` → Envía los últimos 40 logs guardados en el hilo. Ambos nombres hacen lo mismo.
+
+Cada proceso conserva en memoria hasta 200 logs recientes. Solo se guardan las líneas que pasan el filtro `blacklist`; el historial se pierde al reiniciar McDis-RCON. Si todavía no hay líneas guardadas, el bot responde `[No logs saved yet]`.
+
+La retransmisión agrupa tantas líneas como caben en cada mensaje de Discord. Si el proceso produce logs más rápido de lo que Discord puede recibirlos y la cola alcanza 1000 líneas, McDis conserva los logs nuevos, descarta primero los más antiguos y cuenta cuántos se omitieron. Cuando la cola vuelve a un nivel estable, publica un aviso con la cantidad real descartada. El historial de `last_logs` es independiente de esta cola.
 
 En el canal del panel de Discord, estos comandos deben ir precedidos por `!!` y especificar el proceso o agregar `-all` para aplicarlo a todos. Ejemplo:
 
@@ -128,6 +133,22 @@ McDis-RCON permite ampliar sus funcionalidades mediante dos sistemas distintos:
 - **`mdaddons`** → Se ejecutan mientras McDis-RCON esté abierto.  
 - **`mdplugins`** → Dependen de que el proceso correspondiente esté en ejecución.  
 
+### API de ciclo de vida
+
+Los hooks son métodos `async` opcionales. McDis-RCON solo invoca los que estén definidos en la instancia:
+
+| Hook | Argumento | Momento de ejecución | Destinatarios |
+| --- | --- | --- | --- |
+| `on_process_start` | `process` | Después de arrancar y cargar los plugins | Todos los addons y los plugins de ese proceso |
+| `on_process_stop` | `process` | Al solicitar `stop()` o `kill()` | Todos los addons y los plugins de ese proceso |
+| `on_process_crash` | `process` | Cuando termina sin una parada solicitada | Todos los addons y los plugins de ese proceso |
+| `on_plugins_load` | `process` | Después de cargar o recargar plugins | Todos los addons y los plugins del proceso |
+| `on_plugins_unload` | `process` | Antes de descargar los plugins | Todos los addons y una copia de los plugins que se descargarán |
+| `on_addons_load` | `client` | Después de cargar o recargar addons | Todos los addons cargados |
+| `on_addons_unload` | `client` | Antes de descargar los addons | Una copia de los addons que se descargarán |
+
+Los hooks de proceso no se envían a plugins de otros procesos. Por ejemplo, si arranca `SMP`, todos los addons reciben `on_process_start`, pero solo los plugins registrados en `SMP` lo reciben.
+
 ## Addons (`mdaddons`)
 Estos se cargan apenas McDis-RCON se conecta a la API de Discord y pueden ser recargados usando el comando `!!adreload` en el canal del panel. 
 
@@ -139,6 +160,41 @@ Deben colocarse dentro de la carpeta `McDis/.mdaddons`.
 McDis-RCON permite dos formas de crear addons:  
 1. **Archivos individuales** (`.py`).  
 2. **Carpetas** con un archivo `__init__.py` en su interior.  
+
+</details>
+
+<details>
+  <summary>Ejemplo: Registrar el ciclo de vida de todos los procesos desde un addon</summary>
+
+```python
+from mcdis_rcon.classes import McDisClient, Process
+
+class mdaddon:
+    def __init__(self, client: McDisClient):
+        self.client = client
+
+    async def on_addons_load(self, client: McDisClient):
+        print(f"Addons cargados: {len(client.addons)}")
+
+    async def on_process_start(self, process: Process):
+        print(f"{process.name} inició")
+
+    async def on_process_stop(self, process: Process):
+        print(f"{process.name} recibió una orden de parada")
+
+    async def on_process_crash(self, process: Process):
+        logs = process.last_logs(limit=20)
+        print(f"{process.name} falló. Últimas líneas:\n" + "\n".join(logs))
+
+    async def on_plugins_load(self, process: Process):
+        print(f"{len(process.plugins)} plugins cargados en {process.name}")
+
+    async def on_plugins_unload(self, process: Process):
+        print(f"Descargando plugins de {process.name}")
+
+    async def on_addons_unload(self, client: McDisClient):
+        print("Descargando addons")
+```
 
 </details>
 
@@ -283,11 +339,67 @@ class mdplugin:
     def __init__(self, server: Server):
         self.server = server
 
-    def listener_events(self, log: str):
+    async def listener_events(self, log: str):
         if "joined the game" in log:
             player_name = log.split(" ")[1]  # Extraer el nombre del jugador
             print(f"El jugador {player_name} se ha conectado.")
 ```
+
+</details>
+
+<details>
+  <summary>Ejemplo: Consultar y enviar logs recientes desde un plugin</summary>
+
+```python
+from mcdis_rcon.classes import Process
+
+class mdplugin:
+    def __init__(self, process: Process):
+        self.process = process
+
+    async def on_process_crash(self, process: Process):
+        # Devuelve una lista con, como máximo, las últimas 25 líneas.
+        recent_logs = process.last_logs(limit=25)
+        for line in recent_logs:
+            print(line)
+
+        # También puede publicar el historial en el hilo Console del proceso.
+        await process.send_last_logs(limit=25)
+```
+
+`Process.last_logs(limit=40)` es síncrono y devuelve `list[str]`. `Process.send_last_logs(limit=40)` es asíncrono y devuelve el mensaje enviado a Discord.
+
+</details>
+
+<details>
+  <summary>Ejemplo: Registrar un plugin manualmente</summary>
+
+`Process.register_plugin(plugin)` permite agregar una instancia sin crear un archivo dentro de `.mdplugins`. El método devuelve la misma instancia registrada.
+
+```python
+from mcdis_rcon.classes import McDisClient, Process
+
+class RuntimePlugin:
+    def __init__(self, process: Process):
+        self.process = process
+
+    async def on_process_start(self, process: Process):
+        print(f"Plugin dinámico activo en {process.name}")
+
+    async def listener_events(self, log: str):
+        if "Done" in log:
+            print(f"{self.process.name} está listo")
+
+class mdaddon:
+    def __init__(self, client: McDisClient):
+        self.client = client
+
+    async def on_addons_load(self, client: McDisClient):
+        for process in client.processes:
+            process.register_plugin(RuntimePlugin(process))
+```
+
+El registro no comprueba duplicados. Si un addon puede cargarse varias veces, debe evitar registrar la misma instancia o funcionalidad más de una vez.
 
 </details>
 
