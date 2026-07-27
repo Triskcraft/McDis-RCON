@@ -14,6 +14,7 @@ McDis-RCON es una aplicación escrita en Python que permite retransmitir la cons
 - **Soporte para inglés y español**
 - **Control de procesos**: Inicia, detiene, reinicia y finaliza servidores con facilidad.  
 - **Retransmisión de la consola**: Visualiza e interactúa con la consola del servidor directamente desde Discord.  
+- **Historial reciente de consola**: Recupera los últimos logs desde Discord o desde la API de cada proceso.
 - **Sistema de backups**: Permite crear copias de seguridad de los archivos de los procesos.
 - **Explorador de archivos**: Gestiona archivos del servidor con operaciones básicas integradas.  
 - **Gestor de procesos**: Supervisa y administra procesos dentro de la carpeta de ejecución de McDis.  
@@ -23,7 +24,7 @@ McDis-RCON es una aplicación escrita en Python que permite retransmitir la cons
 - **Reporte de errores avanzado**: Los errores del programa son detectados y notificados automáticamente en Discord, facilitando su monitoreo y resolución.  
 - **Compatibilidad con múltiples launchers**: Funciona con Fabric, Paper, Vanilla y más (cualquier proceso en Java). 
 - **No modifica el servidor de Minecraft**: McDis-RCON ejecuta procesos con `Popen`, de manera similar a **MCDReforged**.  
-- **Sistema de eventos**: A diferencia de **MCDReforged**, McDis-RCON no incluye un sistema de eventos por defecto. Sin embargo, este puede ser añadido por medio de un plugin. 
+- **Hooks de ciclo de vida**: Addons y plugins pueden reaccionar al inicio, parada o fallo de procesos y a la carga o descarga de extensiones.
 - **Compatible con MCDReforged**.  
 
 
@@ -93,4 +94,4 @@ Si te gustaría contribuir agregando nuevas funciones, optimizando el código o 
 Únete a mi servidor de Discord:  
 [![Discord](https://img.shields.io/badge/Join-Discord-5865F2?logo=discord&logoColor=white)](https://discord.gg/xB9N38HBJY)  
 
-También puedes contactarme directamente en Discord: **kassiulo**  
+También puedes contactarme directamente en Discord: **kassiulo**
