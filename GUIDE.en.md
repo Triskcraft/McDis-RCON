@@ -91,6 +91,8 @@ In the threads acting as the process consoles, the following commands can be use
 
 Each process keeps up to 200 recent logs in memory. Only lines that pass the `blacklist` filter are stored; the history is lost when McDis-RCON restarts. If no lines have been saved yet, the bot replies with `[No logs saved yet]`.
 
+The relay packs as many lines as fit in each Discord message. If the process produces logs faster than Discord can receive them and the queue reaches 1000 lines, McDis keeps new logs, discards the oldest ones first, and counts the omitted lines. Once the queue returns to a stable level, it posts a notice with the actual number discarded. The `last_logs` history is independent from this relay queue.
+
 In the Discord panel channel, these commands should be preceded by `!!` and specify the process or add `-all` to apply it to all. Example:
 
 - `!!start SMP` → Equivalent to typing `start` in the `SMP` console. (It is case-insensitive: `!!start smp` will do the same).

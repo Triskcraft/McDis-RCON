@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import contextlib
 import glob
@@ -12,7 +14,7 @@ from collections import deque
 from collections.abc import Iterable
 from datetime import datetime
 from queue import Queue
-from typing import Any, TypedDict
+from typing import TYPE_CHECKING, Any, TypedDict
 
 import aiohttp
 import discord
@@ -23,7 +25,9 @@ from ..utils.discord_utils import thread
 from ..utils.files import copy_dir, get_path_size
 from ..utils.hardware import ram_usage
 from ..utils.mrkd import truncate
-from .McDisClient import McDisClient
+
+if TYPE_CHECKING:
+    from .McDisClient import McDisClient
 
 
 class ProcessConfig(TypedDict):
@@ -54,6 +58,8 @@ class Process:
         self._console_log: Queue[str] | None = None
         self._console_relay: Queue[str] | None = None
         self._max_logs_in_queue = 1000
+        self._relay_message_limit = 1990
+        self._omitted_relay_logs = 0
         self._last_logs: deque[str] = deque(maxlen=200)
 
         dirs = [self.path_files, self.path_bkps, self.path_plugins, self.path_commands]
@@ -77,7 +83,8 @@ class Process:
                 os.makedirs(dir, exist_ok=True)
 
             self._console_log = queue.Queue()
-            self._console_relay = queue.Queue()
+            self._console_relay = queue.Queue(maxsize=self._max_logs_in_queue)
+            self._omitted_relay_logs = 0
 
             self.process = subprocess.Popen(
                 self.start_cmd.split(' '),
@@ -364,33 +371,103 @@ class Process:
             except Exception:
                 pass
 
+    @staticmethod
+    def _sanitize_relay_log(log: str) -> str:
+        return log.replace('_', '⎽').replace('*', ' ').replace('`', '’').strip()
+
+    def _enqueue_relay_log(self, log: str) -> None:
+        if not self._console_relay:
+            return
+
+        try:
+            self._console_relay.put_nowait(log)
+        except queue.Full:
+            # Keep the newest console output. The complete process output still
+            # belongs to the process itself; Discord is only a live relay.
+            with contextlib.suppress(queue.Empty):
+                self._console_relay.get_nowait()
+                self._omitted_relay_logs += 1
+            self._console_relay.put_nowait(log)
+
+    def _take_relay_batch(self, pending_chunks: deque[str]) -> str:
+        if not self._console_relay:
+            return ''
+
+        batch: list[str] = []
+        batch_size = 0
+
+        while batch_size < self._relay_message_limit:
+            if pending_chunks:
+                log = pending_chunks.popleft()
+            else:
+                try:
+                    log = self._console_relay.get_nowait()
+                except queue.Empty:
+                    break
+                log = self._sanitize_relay_log(log)
+
+            if not log:
+                continue
+
+            separator_size = 1 if batch else 0
+            available = self._relay_message_limit - batch_size - separator_size
+            if available <= 0:
+                pending_chunks.appendleft(log)
+                break
+
+            batch.append(log[:available])
+            batch_size += separator_size + min(len(log), available)
+
+            if len(log) > available:
+                pending_chunks.appendleft(log[available:])
+                break
+
+        return '\n'.join(batch)
+
+    def _queue_omission_notice(self, pending_chunks: deque[str], *, process_finished: bool) -> None:
+        if not self._console_relay or self._omitted_relay_logs == 0:
+            return
+
+        recovered = self._console_relay.qsize() <= self._max_logs_in_queue // 2
+        if not recovered and not process_finished:
+            return
+
+        omitted = self._omitted_relay_logs
+        self._omitted_relay_logs = 0
+        pending_chunks.append(
+            self.log_format(
+                f'Discord relay skipped {omitted} logs because the console was producing output '
+                'faster than Discord could receive it. Use last_logs for recent output.'
+            )
+        )
+
     async def _relay_console(self) -> None:
         self._relaying = True
         remote_console = await thread(f'Console {self.name}', self.client.panel)
         await remote_console.send('```\n[Initializing Process...]\n```')
 
         if self.process and self._console_relay:
-            while (self.process.poll() is None or not self._console_relay.empty()) and not self._stop_relay:
+            pending_chunks: deque[str] = deque()
+            while (
+                self.process.poll() is None
+                or not self._console_relay.empty()
+                or pending_chunks
+                or self._omitted_relay_logs
+            ) and not self._stop_relay:
                 try:
-                    logs = '\n'.join([self._console_relay.get() for _ in range(10) if not self._console_relay.empty()])
+                    process_finished = self.process.poll() is not None
+                    self._queue_omission_notice(pending_chunks, process_finished=process_finished)
 
-                    if logs.replace('\n', '').strip() != '':
-                        logs = logs.replace('_', '⎽').replace('*', ' ').replace('`', '’').strip()
-                        await remote_console.send(f'```md\n{truncate(logs, 1990)}```')
+                    if not pending_chunks and self._console_relay.empty():
+                        await asyncio.sleep(0.25)
+                        continue
 
-                    if self._console_relay.qsize() < 10:
-                        await asyncio.sleep(0.5)
+                    logs = self._take_relay_batch(pending_chunks)
+                    if logs:
+                        await remote_console.send(f'```md\n{logs}```')
 
-                    elif self._max_logs_in_queue < self._console_relay.qsize():
-                        self._console_relay = queue.Queue()
-                        log = self.log_format(
-                            f'McDis was {self._max_logs_in_queue} logs behind; omitting relaying these logs...'
-                        )
-
-                        await remote_console.send(f'```md\n{log}\n```')
-
-                    else:
-                        await asyncio.sleep(0.1)
+                    if not pending_chunks and self._console_relay.empty() and not process_finished:
+                        await asyncio.sleep(0.25)
 
                 except (aiohttp.ClientError, discord.HTTPException):
                     try:
@@ -427,7 +504,7 @@ class Process:
                             continue
                         if not any(x in log for x in self.blacklist if x):
                             self._last_logs.append(log)
-                            self._console_relay.put(log)
+                            self._enqueue_relay_log(log)
 
                         asyncio.create_task(self._listener_events(log))
 
@@ -457,8 +534,7 @@ class Process:
         return f'[McDis] [{datetime.now().strftime("%H:%M:%S")}] [MainThread/{type}]: {log}'
 
     def add_log(self, log: str) -> None:
-        if self._console_relay:
-            self._console_relay.put(self.log_format(log))
+        self._enqueue_relay_log(self.log_format(log))
 
     def last_logs(self, *, limit: int = 40) -> list[str]:
         return list(self._last_logs)[-limit:]

@@ -93,6 +93,8 @@ En los hilos que actúan como consola de los procesos, se pueden usar los siguie
 
 Cada proceso conserva en memoria hasta 200 logs recientes. Solo se guardan las líneas que pasan el filtro `blacklist`; el historial se pierde al reiniciar McDis-RCON. Si todavía no hay líneas guardadas, el bot responde `[No logs saved yet]`.
 
+La retransmisión agrupa tantas líneas como caben en cada mensaje de Discord. Si el proceso produce logs más rápido de lo que Discord puede recibirlos y la cola alcanza 1000 líneas, McDis conserva los logs nuevos, descarta primero los más antiguos y cuenta cuántos se omitieron. Cuando la cola vuelve a un nivel estable, publica un aviso con la cantidad real descartada. El historial de `last_logs` es independiente de esta cola.
+
 En el canal del panel de Discord, estos comandos deben ir precedidos por `!!` y especificar el proceso o agregar `-all` para aplicarlo a todos. Ejemplo:
 
 - `!!start SMP` → Equivalente a escribir `start` en la consola de `SMP`. (No distingue mayúsculas: `!!start smp` hará lo mismo).
